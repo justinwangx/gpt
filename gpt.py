@@ -1,22 +1,25 @@
 import torch
 import torch.nn as nn
 
-def positional_encoding(x):
-    pass
+# class PositionalEmbedding(nn.Module):
+#     """GPT uses learned positional embeddings"""
+#     def __init__(self, cfg):
+#         super().__init__()
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, dm, nh):
+    def __init__(self, cfg):
+        assert cfg.dm % cfg.n_heads == 0, 'dimension of model not divisible by number of heads'
         # i'm setting dv = dk = dm / nh, as this is what's done in the original transformer paper
         # this makes the computational cost of MHA similiar to that of attention for a single head
         # but if we wanted to we could set dk and dm to different values
-        assert dm % nh == 0, 'dimension of model not divisible by number of heads'
         super().__init__()
-        self.dk = dm // nh
+        self.dm = cfg.dm
+        self.dk = cfg.dm // cfg.n_heads
         self.dv = self.dk
-        self.q_proj = nn.Linear(dm, dm)
-        self.k_proj = nn.Linear(dm, dm)
-        self.v_proj = nn.Linear(dm, dm)
-        self.output = nn.Linear(dm, dm)
+        self.q_proj = nn.Linear(self.dm, self.dm)
+        self.k_proj = nn.Linear(self.dm, self.dm)
+        self.v_proj = nn.Linear(self.dm, self.dm)
+        self.output = nn.Linear(self.dm, self.dm)
     
     def forward(self, x):
         # x -> (batch_size, seq_len, d_model)
@@ -34,13 +37,13 @@ class MultiHeadAttention(nn.Module):
         return self.output(torch.cat([h for h in heads], dim=2))
         
 
-class AttentionBlock(nn.Module):
-    def __init__(self, n_heads, d_model, ff_dim):
+class Block(nn.Module):
+    def __init__(self, cfg):
         super.__init__()
-        self.MHA = MultiHeadAttention(d_model, n_heads)
-        self.FF1 = nn.Linear(d_model, ff_dim)
+        self.MHA = MultiHeadAttention(cfg)
+        self.FF1 = nn.Linear(cfg.dm, cfg.dff)
         self.relu = nn.ReLU()
-        self.FF2 = nn.Linear(ff_dim, d_model)
+        self.FF2 = nn.Linear(cfg.dff, cfg.dm)
         self.LN = nn.LayerNorm()
 
     def forward(self, x):
@@ -51,12 +54,10 @@ class AttentionBlock(nn.Module):
         return x
 
 class GPT(nn.Module):
-    def __init__(self, n_heads=3, n_layers=3, d_model=512, ff_dim=256):
+    def __init__(self, cfg):
         super().__init__()
-        self.layers = nn.Sequential(*[AttentionBlock(n_heads, d_model, ff_dim) for i in range(n_layers)])
+        self.layers = nn.ModuleList([Block(cfg) for i in range(cfg.n_layers)])
     
     def forward(self, x):
-        x = positional_encoding(x)
         x = self.layers(x)
         return x
-
