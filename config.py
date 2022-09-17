@@ -8,6 +8,7 @@ class GPTConfig:
         attn_dropout=0.1,
         resid_dropout=0.1,
         n_positions=1024,
+        gelu=True,
     ):
 
         self.n_layers = n_layers
