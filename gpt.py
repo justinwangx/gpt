@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 
 # class PositionalEmbedding(nn.Module):
 #     """GPT uses learned positional embeddings"""
@@ -9,49 +10,58 @@ import torch.nn as nn
 class MultiHeadAttention(nn.Module):
     def __init__(self, cfg):
         assert cfg.dm % cfg.n_heads == 0, 'dimension of model not divisible by number of heads'
-        # i'm setting dv = dk = dm / nh, as this is what's done in the original transformer paper
+        # i'm setting dv = dk = dm / nh, as this is what's typically done
         # this makes the computational cost of MHA similiar to that of attention for a single head
-        # but if we wanted to we could set dk and dm to different values
-        super().__init__()
+        # but if we wanted to we could set dk and dv to different values
         self.dm = cfg.dm
         self.dk = cfg.dm // cfg.n_heads
-        self.dv = self.dk
-        self.q_proj = nn.Linear(self.dm, self.dm)
-        self.k_proj = nn.Linear(self.dm, self.dm)
-        self.v_proj = nn.Linear(self.dm, self.dm)
+        self.qkv_proj = nn.Linear(self.dm, self.dm * 3)
         self.output = nn.Linear(self.dm, self.dm)
+        self.softmax = nn.Softmax(dim=-1)
+        self.attn_dropout = nn.Dropout(cfg.attn_dropout)
+        self.resid_dropout = nn.Dropout(cfg.resid_dropout)
+        self.mask = torch.tril(torch.ones(1, 1, cfg.n_positions, cfg.n_positions))
+
+    def forward(self, x):
+        bs, seq_len, dm = x.shape
+        q, k, v = self.qkv_proj(x).split(self.dm, dim=-1) # (bs, seq_len, dk)
+        q, k, v = [x.view(bs, seq_len, -1, self.dk).transpose(1, 2) for x in (q, k, v)] # (bs, nh, seq_len, dk)
+
+        w = q @ k.transpose(-2, -1) / math.sqrt(self.dk) # (bs, nh, seq_len, seq_len)
+        w.masked_fill_(self.mask==0, -float('inf'))
+        w = self.softmax(w)
+        w = self.attn_dropout(w)
+
+        z = w @ v # (bs, nh, seq_len, dk)
+        z = z.transpose(1, 2).contiguous().view(bs, seq_len, dm)
+        return z
+
+class FeedForwardNetwork(nn.Module):
+    def __init__(self, cfg):
+        super.__init__()
+        self.linear1 = nn.Linear(cfg.dm, cfg.dff)
+        self.act = nn.GELU() if cfg.gelu else nn.ReLU()
+        self.linear2 = nn.Linear(cfg.dff, cfg.dm)
+        self.dropout = nn.Dropout(cfg.resid_dropout)
     
     def forward(self, x):
-        # x -> (batch_size, seq_len, d_model)
-        # Q, K, V -> (batch_size, seq_len, d_model)
-        Q = self.q_proj(x)
-        K = self.k_proj(x)
-        V = self.v_proj(x)
-        # split into heads
-        q_split = torch.split(Q, self.dk, dim=2)
-        k_split = torch.split(K, self.dk, dim=2)
-        v_split = torch.split(V, self.dk, dim=2)
-        # att computation for each head
-        heads = [torch.softmax((q @ torch.transpose(k, 1, 2)), dim=0) @ v for q, k, v in zip(q_split, k_split, v_split)]
-        # concat, multiply by output matrix, return
-        return self.output(torch.cat([h for h in heads], dim=2))
-        
+        return self.dropout(self.linear2(self.act(self.linear1(x))))        
 
 class Block(nn.Module):
     def __init__(self, cfg):
         super.__init__()
-        self.MHA = MultiHeadAttention(cfg)
-        self.FF1 = nn.Linear(cfg.dm, cfg.dff)
-        self.relu = nn.ReLU()
-        self.FF2 = nn.Linear(cfg.dff, cfg.dm)
-        self.LN = nn.LayerNorm()
+        self.mha = MultiHeadAttention(cfg)
+        self.ffn = FeedForwardNetwork(cfg)
+        self.ln1 = nn.LayerNorm(cfg.dm)
+        self.ln2 = nn.LayerNorm(cfg.dm)
 
     def forward(self, x):
-        x = x + self.MHA(x)
-        x = self.LN(x)
-        x = x + self.FF2(self.relu(self.FF1(x)))
-        x = self.LN(x)
+        x = x + self.mha(self.ln1(x))
+        x = x + self.ffn(self.ln2(x))
         return x
+
+class Generator(nn.Module):
+    pass
 
 class GPT(nn.Module):
     def __init__(self, cfg):
