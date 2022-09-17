@@ -18,3 +18,4 @@ class GPTConfig:
         self.attn_dropout = attn_dropout
         self.resid_dropout = resid_dropout
         self.n_positions = n_positions
+        self.gelu = gelu
