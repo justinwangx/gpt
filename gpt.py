@@ -13,6 +13,7 @@ class MultiHeadAttention(nn.Module):
         # i'm setting dv = dk = dm / nh, as this is what's typically done
         # this makes the computational cost of MHA similiar to that of attention for a single head
         # but if we wanted to we could set dk and dv to different values
+        super().__init__()
         self.dm = cfg.dm
         self.dk = cfg.dm // cfg.n_heads
         self.qkv_proj = nn.Linear(self.dm, self.dm * 3)
@@ -28,7 +29,7 @@ class MultiHeadAttention(nn.Module):
         q, k, v = [x.view(bs, seq_len, -1, self.dk).transpose(1, 2) for x in (q, k, v)] # (bs, nh, seq_len, dk)
 
         w = q @ k.transpose(-2, -1) / math.sqrt(self.dk) # (bs, nh, seq_len, seq_len)
-        w.masked_fill_(self.mask==0, -float('inf'))
+        w.masked_fill_(self.mask[:, :, :seq_len, :seq_len] == 0, -float('inf'))
         w = self.softmax(w)
         w = self.attn_dropout(w)
 
@@ -38,7 +39,7 @@ class MultiHeadAttention(nn.Module):
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, cfg):
-        super.__init__()
+        super().__init__()
         self.linear1 = nn.Linear(cfg.dm, cfg.dff)
         self.act = nn.GELU() if cfg.gelu else nn.ReLU()
         self.linear2 = nn.Linear(cfg.dff, cfg.dm)
@@ -49,7 +50,7 @@ class FeedForwardNetwork(nn.Module):
 
 class Block(nn.Module):
     def __init__(self, cfg):
-        super.__init__()
+        super().__init__()
         self.mha = MultiHeadAttention(cfg)
         self.ffn = FeedForwardNetwork(cfg)
         self.ln1 = nn.LayerNorm(cfg.dm)
@@ -69,5 +70,6 @@ class GPT(nn.Module):
         self.layers = nn.ModuleList([Block(cfg) for i in range(cfg.n_layers)])
     
     def forward(self, x):
-        x = self.layers(x)
+        for layer in self.layers:
+            x = layer(x)
         return x
