@@ -2,11 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-# class PositionalEmbedding(nn.Module):
-#     """GPT uses learned positional embeddings"""
-#     def __init__(self, cfg):
-#         super().__init__()
-
 class MultiHeadAttention(nn.Module):
     def __init__(self, cfg):
         assert cfg.dm % cfg.n_heads == 0, 'dimension of model not divisible by number of heads'
@@ -25,7 +20,7 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, x):
         bs, seq_len, dm = x.shape
-        q, k, v = self.qkv_proj(x).split(self.dm, dim=-1) # (bs, seq_len, dk)
+        q, k, v = self.qkv_proj(x).split(self.dm, dim=-1) # (bs, seq_len, dm)
         q, k, v = [x.view(bs, seq_len, -1, self.dk).transpose(1, 2) for x in (q, k, v)] # (bs, nh, seq_len, dk)
 
         w = q @ k.transpose(-2, -1) / math.sqrt(self.dk) # (bs, nh, seq_len, seq_len)
@@ -35,6 +30,7 @@ class MultiHeadAttention(nn.Module):
 
         z = w @ v # (bs, nh, seq_len, dk)
         z = z.transpose(1, 2).contiguous().view(bs, seq_len, dm)
+        z = self.resid_dropout(self.output(z))
         return z
 
 class FeedForwardNetwork(nn.Module):
@@ -61,15 +57,37 @@ class Block(nn.Module):
         x = x + self.ffn(self.ln2(x))
         return x
 
-class Generator(nn.Module):
-    pass
-
 class GPT(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.layers = nn.ModuleList([Block(cfg) for i in range(cfg.n_layers)])
+        self.n_positions = cfg.n_positions
+        self.tok_embed = nn.Embedding(cfg.vocab_size, cfg.dm)
+        self.pos_embed = nn.Parameter(torch.zeros(1, cfg.n_positions, cfg.dm))
+        self.embed_dropout = nn.Dropout(cfg.embed_dropout)
+        self.layers = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
+        self.ln = nn.LayerNorm(cfg.dm)
+        self.out = nn.Linear(cfg.dm, cfg.vocab_size, bias=False)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if hasattr(module, 'bias') and module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
     
     def forward(self, x):
+        bs, seq_len = x.shape
+        assert seq_len <= self.n_positions, 'input contains too many tokens'
+        # embed and add positional embedding
+        token_embed = self.tok_embed(x)
+        pos_embed = self.pos_embed[:, :seq_len, :]
+        x = self.embed_dropout(token_embed + pos_embed)
+        # decoder blocks
         for layer in self.layers:
             x = layer(x)
-        return x
+        # output
+        logits = self.out(self.ln(x))
+        return logits
