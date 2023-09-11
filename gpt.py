@@ -2,92 +2,106 @@ import torch
 import torch.nn as nn
 import math
 
-class MultiHeadAttention(nn.Module):
+class MaskedMultiHeadAttention(nn.Module):
     def __init__(self, cfg):
-        assert cfg.dm % cfg.n_heads == 0, 'dimension of model not divisible by number of heads'
-        # i'm setting dv = dk = dm / nh, as this is what's typically done
-        # this makes the computational cost of MHA similiar to that of attention for a single head
-        # but if we wanted to we could set dk and dv to different values
         super().__init__()
-        self.dm = cfg.dm
-        self.dk = cfg.dm // cfg.n_heads
-        self.qkv_proj = nn.Linear(self.dm, self.dm * 3)
-        self.output = nn.Linear(self.dm, self.dm)
-        self.softmax = nn.Softmax(dim=-1)
-        self.attn_dropout = nn.Dropout(cfg.attn_dropout)
-        self.resid_dropout = nn.Dropout(cfg.resid_dropout)
-        self.mask = torch.tril(torch.ones(1, 1, cfg.n_positions, cfg.n_positions))
-
+        assert cfg.n_embd % cfg.n_head == 0, "embedding dimension must be divisible by number of heads"
+        self.c_attn = nn.Linear(cfg.n_embd, 3*cfg.n_embd)
+        self.c_proj = nn.Linear(cfg.n_embd, cfg.n_embd)
+        self.d_model = cfg.n_embd
+        self.n_head = cfg.n_head
+        # head dimension dh == dk == dv
+        self.dh = self.d_model // self.n_head
+        self.mask = torch.tril(torch.ones(1, 1, cfg.n_ctx, cfg.n_ctx))
+    
     def forward(self, x):
-        bs, seq_len, dm = x.shape
-        q, k, v = self.qkv_proj(x).split(self.dm, dim=-1) # (bs, seq_len, dm)
-        q, k, v = [x.view(bs, seq_len, -1, self.dk).transpose(1, 2) for x in (q, k, v)] # (bs, nh, seq_len, dk)
+        bs, seq_len, _ = x.shape
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.d_model, -1)
+        q = q.view(bs, seq_len, self.n_head, self.dh).transpose(1, 2)
+        k = k.view(bs, seq_len, self.n_head, self.dh).transpose(1, 2)
+        v = v.view(bs, seq_len, self.n_head, self.dh).transpose(1, 2)
 
-        w = q @ k.transpose(-2, -1) / math.sqrt(self.dk) # (bs, nh, seq_len, seq_len)
-        w.masked_fill_(self.mask[:, :, :seq_len, :seq_len] == 0, -float('inf'))
-        w = self.softmax(w)
-        w = self.attn_dropout(w)
+        attn = q @ k.transpose(-1, -2) * (1.0 / math.sqrt(self.dh))
+        attn = attn.masked_fill(self.mask[..., :seq_len, :seq_len] == 0, -float('inf'))
+        attn = nn.functional.softmax(attn, dim=-1)
 
-        z = w @ v # (bs, nh, seq_len, dk)
-        z = z.transpose(1, 2).contiguous().view(bs, seq_len, dm)
-        z = self.resid_dropout(self.output(z))
+        z = attn @ v # (bs, nh, seq_len, dh)
+        z = z.transpose(1, 2).contiguous().view(bs, seq_len, self.d_model)
+        z = self.c_proj(z)
         return z
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.linear1 = nn.Linear(cfg.dm, cfg.dff)
+        self.c_fc = nn.Linear(cfg.n_embd, 4*cfg.n_embd)
+        self.c_proj = nn.Linear(4*cfg.n_embd, cfg.n_embd)
         self.act = nn.GELU() if cfg.gelu else nn.ReLU()
-        self.linear2 = nn.Linear(cfg.dff, cfg.dm)
-        self.dropout = nn.Dropout(cfg.resid_dropout)
     
     def forward(self, x):
-        return self.dropout(self.linear2(self.act(self.linear1(x))))        
+        return self.c_proj(self.act(self.c_fc(x)))
 
-class Block(nn.Module):
+class GPT2Block(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.mha = MultiHeadAttention(cfg)
-        self.ffn = FeedForwardNetwork(cfg)
-        self.ln1 = nn.LayerNorm(cfg.dm)
-        self.ln2 = nn.LayerNorm(cfg.dm)
+        self.ln_1 = nn.LayerNorm(cfg.n_embd)
+        self.attn = MaskedMultiHeadAttention(cfg)
+        self.ln_2 = nn.LayerNorm(cfg.n_embd)
+        self.mlp = FeedForwardNetwork(cfg)
 
     def forward(self, x):
-        x = x + self.mha(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 class GPT(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.n_positions = cfg.n_positions
-        self.tok_embed = nn.Embedding(cfg.vocab_size, cfg.dm)
-        self.pos_embed = nn.Parameter(torch.zeros(1, cfg.n_positions, cfg.dm))
-        self.embed_dropout = nn.Dropout(cfg.embed_dropout)
-        self.layers = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
-        self.ln = nn.LayerNorm(cfg.dm)
-        self.out = nn.Linear(cfg.dm, cfg.vocab_size, bias=False)
-        self.apply(self._init_weights)
+        self.cfg = cfg
+        self.transformer = nn.ModuleDict(dict(
+            wte = nn.Embedding(cfg.vocab_size, cfg.n_embd),
+            wpe = nn.Embedding(cfg.n_ctx, cfg.n_embd),
+            h = nn.ModuleList([GPT2Block(cfg) for _ in range(cfg.n_layer)]),
+            ln_f = nn.LayerNorm(cfg.n_embd, cfg.layer_norm_epsilon)
+        ))
+        self.lm_head = nn.Linear(cfg.n_embd, cfg.vocab_size, bias=False)
 
-    def _init_weights(self, module):
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if hasattr(module, 'bias') and module.bias is not None:
-                nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.LayerNorm):
-            nn.init.ones_(module.weight)
-            nn.init.zeros_(module.bias)
-    
     def forward(self, x):
         bs, seq_len = x.shape
-        assert seq_len <= self.n_positions, 'input contains too many tokens'
-        # embed and add positional embedding
-        token_embed = self.tok_embed(x)
-        pos_embed = self.pos_embed[:, :seq_len, :]
-        x = self.embed_dropout(token_embed + pos_embed)
-        # decoder blocks
-        for layer in self.layers:
+        assert seq_len <= self.cfg.n_ctx, 'input contains too many tokens'
+        pos = torch.arange(seq_len, dtype=torch.long)
+
+        token_embd = self.transformer["wte"](x)
+        pos_embd = self.transformer["wpe"](pos)
+
+        x = token_embd + pos_embd
+        for layer in self.transformer["h"]:
             x = layer(x)
-        # output
-        logits = self.out(self.ln(x))
+        
+        x = self.transformer.ln_f(x)
+        # inference optimization from nanoGPT :) only forward last index to lm head
+        logits = self.lm_head(x[:, [-1], :])
         return logits
+    
+    @torch.no_grad()
+    def generate(self, token_idx, max_new_tokens=200, temperature=1.0, top_k=50, do_sample=True):
+        for _ in range(max_new_tokens):
+            token_idx = token_idx if token_idx.size(1) <= self.cfg.n_ctx else token_idx[:, -self.cfg.n_ctx:]
+            logits = self(token_idx)
+
+            # remove sequence dimension (pluck last index) and do temperature scaling
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                # mask logits with values below the kth highest value - index with [-1] to preserve the batch dimension
+                logits[logits < values[:, [-1]]] = -float('inf')
+
+            probs = nn.functional.softmax(logits, dim=-1)
+            if do_sample:
+                next_idx = torch.multinomial(probs, num_samples=1)
+            else:
+                next_idx = torch.argmax(probs, dim=-1, keepdim=True)
+            
+            token_idx = torch.cat([token_idx, next_idx], dim=1)
+
+        return token_idx

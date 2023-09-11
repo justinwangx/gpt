@@ -1,24 +1,20 @@
 class GPTConfig:
     def __init__(
         self, 
-        n_layers=12, 
-        n_heads=12,
-        vocab_size=50257,
-        dm=768,
-        dff=3072,
-        embed_dropout=0.1,
-        attn_dropout=0.1,
-        resid_dropout=0.1,
+        layer_norm_epsilon=1e-05,
+        n_ctx=1024,
+        n_embd=768,
+        n_head=12,
+        n_layer=12, 
         n_positions=1024,
+        vocab_size=50257,
         gelu=True,
     ):
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        self.vocab_size = vocab_size
-        self.dm = dm
-        self.dff = dff
-        self.embed_dropout = embed_dropout
-        self.attn_dropout = attn_dropout
-        self.resid_dropout = resid_dropout
+        self.layer_norm_epsilon = layer_norm_epsilon
+        self.n_ctx = n_ctx
+        self.n_embd = n_embd
+        self.n_head = n_head
+        self.n_layer = n_layer
         self.n_positions = n_positions
+        self.vocab_size = vocab_size
         self.gelu = gelu
