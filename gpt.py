@@ -36,7 +36,7 @@ class FeedForwardNetwork(nn.Module):
         super().__init__()
         self.c_fc = nn.Linear(cfg.n_embd, 4*cfg.n_embd)
         self.c_proj = nn.Linear(4*cfg.n_embd, cfg.n_embd)
-        self.act = nn.GELU() if cfg.gelu else nn.ReLU()
+        self.act = nn.GELU()
     
     def forward(self, x):
         return self.c_proj(self.act(self.c_fc(x)))
@@ -62,7 +62,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(cfg.vocab_size, cfg.n_embd),
             wpe = nn.Embedding(cfg.n_ctx, cfg.n_embd),
             h = nn.ModuleList([GPT2Block(cfg) for _ in range(cfg.n_layer)]),
-            ln_f = nn.LayerNorm(cfg.n_embd, cfg.layer_norm_epsilon)
+            ln_f = nn.LayerNorm(cfg.n_embd)
         ))
         self.lm_head = nn.Linear(cfg.n_embd, cfg.vocab_size, bias=False)
 
