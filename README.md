@@ -1,11 +1,12 @@
-# simple GPT
-A simple (~100 lines) implementation of GPT in PyTorch.  
-This implementation is based off of the GPT-2 architecture, though some aspects of the model (e.g. scaling the weights of residual layers at initialization) are left out for simplicity.  
+# simpleGPT
 
-```checks.py``` contains a function that checks that the model can learn.  
-I may add training / sequence generation scripts at some point in time.
+This is a minimal implementation of GPT-2 in ~100 lines of PyTorch. The code here supports loading GPT-2 weights from HuggingFace and generating text on the CPU. For simplicity, since this is meant to be a simple example of inference and not training, I've omitted some things like dropout and weight initialization.
 
-### Implementations / resources that helped me: 
-* http://nlp.seas.harvard.edu/annotated-transformer/
-* https://github.com/karpathy/minGPT
-* https://jalammar.github.io/illustrated-gpt2/
+To run this locally, first clone the repo and then run:
+
+```bash
+pip install torch transformers
+python generate.py
+```
+
+This implementation was inspired by Andrej Karpathy's minGPT / nanoGPT projects. I referenced those when writing this.
